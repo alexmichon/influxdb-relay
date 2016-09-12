@@ -30,8 +30,7 @@ type HTTP struct {
 
 	closing int64
 	l       net.Listener
-
-	backends []*httpBackend
+	pusher  *MetricsPusher
 }
 
 const (
@@ -43,7 +42,7 @@ const (
 	MB = 1024 * KB
 )
 
-func NewHTTP(cfg HTTPConfig) (Relay, error) {
+func NewHTTP(cfg HTTPConfig, pusher *MetricsPusher) (Relay, error) {
 	h := new(HTTP)
 
 	h.addr = cfg.Addr
@@ -57,14 +56,7 @@ func NewHTTP(cfg HTTPConfig) (Relay, error) {
 		h.schema = "https"
 	}
 
-	for i := range cfg.Outputs {
-		backend, err := newHTTPBackend(&cfg.Outputs[i])
-		if err != nil {
-			return nil, err
-		}
-
-		h.backends = append(h.backends, backend)
-	}
+	h.pusher = pusher
 
 	return h, nil
 }
@@ -185,68 +177,13 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// normalize query string
-	query := queryParams.Encode()
+	err = h.pusher.Add(queryParams, r.Header.Get("Authorization"), outBuf)
 
-	outBytes := outBuf.Bytes()
-
-	// check for authorization performed via the header
-	authHeader := r.Header.Get("Authorization")
-
-	var wg sync.WaitGroup
-	wg.Add(len(h.backends))
-
-	var responses = make(chan *responseData, len(h.backends))
-
-	for _, b := range h.backends {
-		b := b
-		go func() {
-			defer wg.Done()
-			resp, err := b.post(outBytes, query, authHeader)
-			if err != nil {
-				log.Printf("Problem posting to relay %q backend %q: %v", h.Name(), b.name, err)
-			} else {
-				if resp.StatusCode/100 == 5 {
-					log.Printf("5xx response for relay %q backend %q: %v", h.Name(), b.name, resp.StatusCode)
-				}
-				responses <- resp
-			}
-		}()
+	if err != nil {
+		jsonError(w, 404, err.Error())
+	} else {
+		w.WriteHeader(http.StatusNoContent)
 	}
-
-	go func() {
-		wg.Wait()
-		close(responses)
-		putBuf(outBuf)
-	}()
-
-	var errResponse *responseData
-
-	for resp := range responses {
-		switch resp.StatusCode / 100 {
-		case 2:
-			w.WriteHeader(http.StatusNoContent)
-			return
-
-		case 4:
-			// user error
-			resp.Write(w)
-			return
-
-		default:
-			// hold on to one of the responses to return back to the client
-			errResponse = resp
-		}
-	}
-
-	// no successful writes
-	if errResponse == nil {
-		// failed to make any valid request...
-		jsonError(w, http.StatusServiceUnavailable, "unable to write points")
-		return
-	}
-
-	errResponse.Write(w)
 }
 
 type responseData struct {
@@ -337,53 +274,6 @@ func (b *simplePoster) post(buf []byte, query string, auth string) (*responseDat
 		ContentEncoding: resp.Header.Get("Conent-Encoding"),
 		StatusCode:      resp.StatusCode,
 		Body:            data,
-	}, nil
-}
-
-type httpBackend struct {
-	poster
-	name string
-}
-
-func newHTTPBackend(cfg *HTTPOutputConfig) (*httpBackend, error) {
-	if cfg.Name == "" {
-		cfg.Name = cfg.Location
-	}
-
-	timeout := DefaultHTTPTimeout
-	if cfg.Timeout != "" {
-		t, err := time.ParseDuration(cfg.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing HTTP timeout '%v'", err)
-		}
-		timeout = t
-	}
-
-	var p poster = newSimplePoster(cfg.Location, timeout, cfg.SkipTLSVerification)
-
-	// If configured, create a retryBuffer per backend.
-	// This way we serialize retries against each backend.
-	if cfg.BufferSizeMB > 0 {
-		max := DefaultMaxDelayInterval
-		if cfg.MaxDelayInterval != "" {
-			m, err := time.ParseDuration(cfg.MaxDelayInterval)
-			if err != nil {
-				return nil, fmt.Errorf("error parsing max retry time %v", err)
-			}
-			max = m
-		}
-
-		batch := DefaultBatchSizeKB * KB
-		if cfg.MaxBatchKB > 0 {
-			batch = cfg.MaxBatchKB * KB
-		}
-
-		p = newRetryBuffer(cfg.BufferSizeMB*MB, batch, max, p)
-	}
-
-	return &httpBackend{
-		poster: p,
-		name:   cfg.Name,
 	}, nil
 }
 

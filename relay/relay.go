@@ -8,14 +8,24 @@ import (
 
 type Service struct {
 	relays map[string]Relay
+	pusher *MetricsPusher
 }
 
 func New(config Config) (*Service, error) {
 	s := new(Service)
+
+	pusher, err := NewMetricsPusher(config.Output)
+
+	if err != nil {
+		return nil, err
+	}
+
+	s.pusher = pusher
+
 	s.relays = make(map[string]Relay)
 
 	for _, cfg := range config.HTTPRelays {
-		h, err := NewHTTP(cfg)
+		h, err := NewHTTP(cfg, s.pusher)
 		if err != nil {
 			return nil, err
 		}
@@ -41,6 +51,9 @@ func New(config Config) (*Service, error) {
 
 func (s *Service) Run() {
 	var wg sync.WaitGroup
+
+	s.pusher.Run()
+
 	wg.Add(len(s.relays))
 
 	for k := range s.relays {
@@ -61,6 +74,7 @@ func (s *Service) Stop() {
 	for _, v := range s.relays {
 		v.Stop()
 	}
+	s.pusher.Stop()
 }
 
 type Relay interface {

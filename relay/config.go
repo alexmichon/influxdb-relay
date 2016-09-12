@@ -9,6 +9,7 @@ import (
 type Config struct {
 	HTTPRelays []HTTPConfig `toml:"http"`
 	UDPRelays  []UDPConfig  `toml:"udp"`
+	Output     OutputConfig `toml:"output"`
 }
 
 type HTTPConfig struct {
@@ -23,9 +24,14 @@ type HTTPConfig struct {
 
 	// Default retention policy to set for forwarded requests
 	DefaultRetentionPolicy string `toml:"default-retention-policy"`
+}
+
+type OutputConfig struct {
+	// Interval between two write requests to InfluxDB servers
+	Interval string `toml:"interval"`
 
 	// Outputs is a list of backed servers where writes will be forwarded
-	Outputs []HTTPOutputConfig `toml:"output"`
+	Outputs []HTTPOutputConfig `toml:"influxdb"`
 }
 
 type HTTPOutputConfig struct {
@@ -34,6 +40,12 @@ type HTTPOutputConfig struct {
 
 	// Location should be set to the URL of the backend server's write endpoint
 	Location string `toml:"location"`
+
+	// List of databases
+	Databases []string `toml:"databases"`
+
+	// Max number of points per batch
+	MaxBatchPoints int `toml:"max-batch-points"`
 
 	// Timeout sets a per-backend timeout for write requests. (Default 10s)
 	// The format used is the same seen in time.ParseDuration
